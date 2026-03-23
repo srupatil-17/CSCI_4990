@@ -1,0 +1,197 @@
+import networkx as nx
+import csv
+import random
+import os
+from collections import Counter
+
+# -----------------------------
+# SETTINGS
+# -----------------------------
+
+DATA_FILE = "data/CollegeMsg.txt.gz"
+
+EDGE_SAMPLES = [5000, 8000, 10000]
+
+TRIALS = 3000
+
+OUTPUT_FOLDER = "college_msg_results"
+
+
+# -----------------------------
+# LOAD DATA
+# -----------------------------
+
+def load_college_msg(path):
+
+    edges = []
+
+    with open(path, "r") as f:
+        for line in f:
+
+            parts = line.strip().split()
+
+            if len(parts) < 3:
+                continue
+
+            u = int(parts[0])
+            v = int(parts[1])
+            t = int(parts[2])
+
+            edges.append((u, v, t))
+
+    # sort by time
+    edges.sort(key=lambda x: x[2])
+
+    return edges
+
+
+# -----------------------------
+# BUILD GRAPH FROM FIRST N EDGES
+# -----------------------------
+
+def build_graph(edges, n):
+
+    G = nx.Graph()
+
+    for i in range(min(n, len(edges))):
+        u, v, _ = edges[i]
+        G.add_edge(u, v)
+
+    return G
+
+
+# -----------------------------
+# EXTRACT LCC
+# -----------------------------
+
+def extract_lcc(G):
+
+    if len(G) == 0:
+        return G
+
+    largest = max(nx.connected_components(G), key=len)
+
+    return G.subgraph(largest).copy()
+
+
+# -----------------------------
+# SHORTEST PATH EXPERIMENT
+# -----------------------------
+
+def run_trials(G, trials):
+
+    nodes = list(G.nodes())
+
+    lengths = []
+
+    for _ in range(trials):
+
+        start = random.choice(nodes)
+        target = random.choice(nodes)
+
+        if start == target:
+            continue
+
+        try:
+            d = nx.shortest_path_length(G, start, target)
+            lengths.append(d)
+
+        except nx.NetworkXNoPath:
+            continue
+
+    return lengths
+
+
+# -----------------------------
+# DISTRIBUTION
+# -----------------------------
+
+def compute_distribution(lengths):
+
+    count = Counter(lengths)
+    total = sum(count.values())
+
+    return {k: count[k] / total for k in count}
+
+
+# -----------------------------
+# EXPORT RESULTS
+# -----------------------------
+
+def export_results(rows):
+
+    os.makedirs(OUTPUT_FOLDER, exist_ok=True)
+
+    filepath = os.path.join(
+        OUTPUT_FOLDER,
+        "college_msg_summary.csv"
+    )
+
+    with open(filepath, "w", newline="") as f:
+
+        writer = csv.writer(f)
+
+        writer.writerow([
+            "edges_used",
+            "nodes_in_lcc",
+            "edges_in_lcc",
+            "avg_path_length"
+        ])
+
+        for r in rows:
+            writer.writerow(r)
+
+    print("Saved:", filepath)
+
+
+# -----------------------------
+# MAIN
+# -----------------------------
+
+def main():
+
+    print("\n===== COLLEGE MSG EXPERIMENT =====\n")
+
+    print("Loading data...")
+
+    edges = load_college_msg(DATA_FILE)
+
+    print("Total edges:", len(edges))
+
+    results = []
+
+    for n in EDGE_SAMPLES:
+
+        print(f"\nUsing first {n} edges...")
+
+        G = build_graph(edges, n)
+
+        G_lcc = extract_lcc(G)
+
+        print("Nodes (LCC):", G_lcc.number_of_nodes())
+        print("Edges (LCC):", G_lcc.number_of_edges())
+
+        lengths = run_trials(G_lcc, TRIALS)
+
+        if not lengths:
+            print("No paths found.")
+            continue
+
+        avg_len = sum(lengths) / len(lengths)
+
+        print("Average path length:", avg_len)
+
+        results.append((
+            n,
+            G_lcc.number_of_nodes(),
+            G_lcc.number_of_edges(),
+            avg_len
+        ))
+
+    export_results(results)
+
+    print("\nDone.")
+
+
+if __name__ == "__main__":
+    main()
