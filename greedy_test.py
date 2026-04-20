@@ -4,7 +4,7 @@ import random
 import csv
 import os
 
-from true_greedy_routing_experiments.true_greedy_routing import greedy_route, lattice_distance, verify_greedy_property
+from true_greedy_routing_experiments.true_greedy_routing import greedy_route, lattice_distance, verify_greedy_property, lattice_distance_coords
 
 # before running dont forget about Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 # and then .\venv\Scripts\Activate.ps1
@@ -186,7 +186,7 @@ def print_greedy_steps(G, path, target):
         best_dist = float("inf")
 
         for n in neighbors:
-            d = manhattan(n, target)
+            d = lattice_distance_coords(n, target)
             print(f"  Neighbor {n} | dist = {d}")
 
             if d < best_dist:
@@ -272,7 +272,7 @@ def verify_greedy_property(G, path, target):
 
         neighbors = list(G.neighbors(current))
 
-        best = min(neighbors, key=lambda n: manhattan(n, target))
+        best = min(neighbors, key=lambda n: lattice_distance_coords(n, target))
 
         if chosen != best:
             return False
@@ -378,7 +378,7 @@ def export_greedy_path(G, path, target):
         ])
 
         for i, node in enumerate(path):
-            d = manhattan(node, target)
+            d = lattice_distance_coords(node, target)
 
             writer.writerow([
                 i,
@@ -426,6 +426,11 @@ def export_shortest_path(G, start, target):
             ])
 
     print(f"Saved shortest path to {filename}")
+
+
+    # CHANGEEEEEEEEEEE
+    # MAKE GREEDY VERSION - LATTICE DISTANCE 
+    # DO NOT DELETE
 
 # -----------------------------
 # MAIN
