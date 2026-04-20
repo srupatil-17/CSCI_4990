@@ -180,7 +180,7 @@ def print_greedy_steps(G, path, target):
 
         neighbors = list(G.neighbors(current))
 
-        print(f"\nAt {current} → target {target}")
+        print(f"\nAt {current} -> target {target}")
 
         best = None
         best_dist = float("inf")
@@ -193,7 +193,7 @@ def print_greedy_steps(G, path, target):
                 best_dist = d
                 best = n
 
-        print(f"Chosen → {best}")
+        print(f"Chosen -> {best}")
 
         if nxt != best:
             print("WARNING: Not greedy!")
