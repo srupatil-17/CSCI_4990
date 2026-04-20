@@ -208,7 +208,7 @@ def print_greedy_steps(G, path, target):
 def export_full_routing_table(G, shortcuts):
 
     os.makedirs("routing_tables", exist_ok=True)
-    filename = os.path.join("routing_tables", "all_pairs_shortest_paths.csv")
+    filename = os.path.join("routing_tables", "all_pairs_lattice_distance.csv")
 
     shortcut_set = set(shortcuts)
 
@@ -219,46 +219,55 @@ def export_full_routing_table(G, shortcuts):
         writer.writerow([
             "source",
             "target",
-            "shortest_path_length",
+            "lattice_distance",
+            "graph_distance",
             "reachable",
-            "uses_shortcut_in_path"
+            "uses_shortcut_in_shortest_path"
         ])
+
+        # precompute graph distances (THIS uses shortcuts)
+        graph_distances = dict(nx.all_pairs_shortest_path_length(G))
 
         for source in G.nodes():
 
-            # get ALL shortest paths from this source
-            paths = nx.single_source_shortest_path(G, source)
-
             for target in G.nodes():
 
-                if target in paths:
+                # TRUE lattice distance (independent of graph)
+                lattice_dist = sum(abs(a - b) for a, b in zip(source, target))
 
-                    path = paths[target]
-                    dist = len(path) - 1
+                # graph distance (may use shortcuts)
+                if target in graph_distances.get(source, {}):
+                    graph_dist = graph_distances[source][target]
                     reachable = True
 
-                    # check if ANY edge in path is a shortcut
-                    uses_shortcut = False
-                    for i in range(len(path) - 1):
-                        edge = (path[i], path[i+1])
-                        if edge in shortcut_set:
-                            uses_shortcut = True
-                            break
+                    # get one shortest path to check shortcuts
+                    try:
+                        path = nx.shortest_path(G, source, target)
+
+                        uses_shortcut = any(
+                            (path[i], path[i+1]) in shortcut_set
+                            for i in range(len(path) - 1)
+                        )
+
+                    except:
+                        uses_shortcut = False
 
                 else:
-                    dist = float("inf")
+                    graph_dist = float("inf")
                     reachable = False
                     uses_shortcut = False
 
                 writer.writerow([
                     source,
                     target,
-                    dist,
+                    lattice_dist,
+                    graph_dist,
                     reachable,
                     uses_shortcut
                 ])
 
-    print(f"\nSaved full routing table → {filename}")
+    print(f"\nSaved full routing table -> {filename}")
+
 
 
 # -----------------------------
