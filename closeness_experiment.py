@@ -1,19 +1,29 @@
 import networkx as nx
+import gzip
 import random
 import math
-import csv
-import os
-import matplotlib.pyplot as plt
+from collections import Counter
+
+# before running dont forget about Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+# and then .\venv\Scripts\Activate.ps1
 
 # -----------------------------
-# HAVERSINE DISTANCE (KM)
+# SETTINGS
 # -----------------------------
 
-def haversine(a, b):
-    lat1, lon1 = a
-    lat2, lon2 = b
+CHECKIN_FILE = "data/loc-gowalla_totalCheckins.txt.gz"
+TRIALS = 200
+LOCAL_K = 4   # number of local neighbors
 
-    R = 6371
+# -----------------------------
+# HAVERSINE DISTANCE
+# -----------------------------
+
+def haversine(coord1, coord2):
+    lat1, lon1 = coord1
+    lat2, lon2 = coord2
+
+    R = 6371  # Earth radius in km
 
     phi1 = math.radians(lat1)
     phi2 = math.radians(lat2)
@@ -21,161 +31,217 @@ def haversine(a, b):
     dphi = math.radians(lat2 - lat1)
     dlambda = math.radians(lon2 - lon1)
 
-    x = math.sin(dphi/2)**2 + math.cos(phi1)*math.cos(phi2)*math.sin(dlambda/2)**2
+    a = math.sin(dphi/2)**2 + \
+        math.cos(phi1) * math.cos(phi2) * math.sin(dlambda/2)**2
 
-    return 2 * R * math.atan2(math.sqrt(x), math.sqrt(1 - x))
-
-
-# -----------------------------
-# SAMPLING NODE PAIRS
-# -----------------------------
-
-def sample_pairs(nodes, k=20000):
-    pairs = []
-
-    for _ in range(k):
-        u = random.choice(nodes)
-        v = random.choice(nodes)
-
-        if u != v:
-            pairs.append((u, v))
-
-    return pairs
-
+    return 2 * R * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
 # -----------------------------
-# DISTANCE SAMPLING (FOR ANALYSIS)
+# LOAD CHECKINS
 # -----------------------------
 
-def sample_distances(coords, num_samples=10000):
-    nodes = list(coords.keys())
-    dists = []
+def load_checkins(file):
 
-    for _ in range(num_samples):
-        u = random.choice(nodes)
-        v = random.choice(nodes)
+    user_checkins = {}
 
-        if u != v:
-            dists.append(haversine(coords[u], coords[v]))
+    with gzip.open(file, 'rt') as f:
+        for line in f:
+            parts = line.strip().split()
 
-    return dists
+            user = parts[0]
+            lat = float(parts[2])
+            lon = float(parts[3])
 
+            if user not in user_checkins:
+                user_checkins[user] = []
 
-# -----------------------------
-# THRESHOLD METHODS
-# -----------------------------
+            user_checkins[user].append((lat, lon))
 
-def threshold_percentiles(distances):
-    distances = sorted(distances)
-
-    percentiles = [5, 10, 25, 50]
-    thresholds = []
-
-    for p in percentiles:
-        idx = int(len(distances) * (p / 100))
-        thresholds.append(distances[idx])
-
-    return thresholds
-
-
-def threshold_fixed():
-    return [1, 5, 10, 50, 100]
-
-
-def threshold_sqrt_n(coords):
-    n = len(coords)
-    return [math.sqrt(n) * 0.001]  # scaled heuristic
-
+    return user_checkins
 
 # -----------------------------
-# MAIN EXPERIMENT
+# HOME LOCATION
 # -----------------------------
 
-def closeness_experiment(G, coords, thresholds, num_samples=20000):
+def compute_home_locations(user_checkins):
 
-    nodes = list(G.nodes())
-    pairs = sample_pairs(nodes, num_samples)
+    home = {}
 
-    results = []
+    for user, locs in user_checkins.items():
+        counts = Counter(locs)
+        home[user] = counts.most_common(1)[0][0]
 
-    for T in thresholds:
+    return home
 
-        total_close = 0
-        connected_close = 0
+# -----------------------------
+# LOCAL EDGES (NEAREST NEIGHBORS)
+# -----------------------------
 
-        for u, v in pairs:
+def add_local_edges(G, home, k=4):
 
-            if u not in coords or v not in coords:
+    users = list(home.keys())
+
+    for u in users:
+
+        distances = []
+
+        for v in users:
+            if u == v:
                 continue
 
-            d = haversine(coords[u], coords[v])
+            d = haversine(home[u], home[v])
+            distances.append((v, d))
 
-            if d <= T:
-                total_close += 1
+        distances.sort(key=lambda x: x[1])
 
-                if G.has_edge(u, v) or G.has_edge(v, u):
-                    connected_close += 1
-
-        pct = connected_close / total_close if total_close > 0 else 0
-
-        results.append((T, total_close, connected_close, pct))
-
-        print(f"T={T:.3f} | close={total_close} | connected={connected_close} | pct={pct:.4f}")
-
-    return results
-
+        for v, _ in distances[:k]:
+            G.add_edge(u, v)
 
 # -----------------------------
-# SAVE RESULTS
+# SHORTCUTS
 # -----------------------------
 
-def save_results(results, filename="closeness_results.csv"):
+def build_home_lookup(home):
+    return {loc: user for user, loc in home.items()}
 
-    os.makedirs("results", exist_ok=True)
-    path = os.path.join("results", filename)
+def add_shortcuts(G, user_checkins, home_lookup):
 
-    with open(path, "w", newline="") as f:
-        writer = csv.writer(f)
+    shortcuts = []
 
-        writer.writerow([
-            "threshold_km",
-            "total_close_pairs",
-            "connected_pairs",
-            "fraction_connected"
-        ])
+    for u, checkins in user_checkins.items():
 
-        for row in results:
-            writer.writerow(row)
+        for loc in checkins:
 
-    print("Saved:", path)
+            if loc in home_lookup:
 
+                v = home_lookup[loc]
 
-# -----------------------------
-# PLOT
-# -----------------------------
+                if u != v:
+                    G.add_edge(u, v)
+                    shortcuts.append((u, v))
 
-def plot_results(results):
-
-    T = [r[0] for r in results]
-    pct = [r[3] for r in results]
-
-    plt.figure()
-    plt.plot(T, pct, marker='o')
-
-    plt.xlabel("Distance Threshold (km)")
-    plt.ylabel("Fraction Connected")
-    plt.title("Closeness vs Connectivity")
-
-    plt.grid()
-    plt.show()
-
+    return shortcuts
 
 # -----------------------------
-# MAIN (PLACEHOLDER)
+# GREEDY ROUTING
+# -----------------------------
+
+def greedy_route(G, start, target, coords, max_steps=1000):
+
+    current = start
+    path = [current]
+    visited = set([current])
+
+    steps = 0
+
+    while current != target and steps < max_steps:
+
+        neighbors = list(G.neighbors(current))
+
+        if not neighbors:
+            return path, False
+
+        best = None
+        best_dist = float("inf")
+
+        for n in neighbors:
+            d = haversine(coords[n], coords[target])
+
+            if d < best_dist:
+                best_dist = d
+                best = n
+
+        if best is None or best in visited:
+            return path, False
+
+        current = best
+        path.append(current)
+        visited.add(current)
+
+        steps += 1
+
+    return path, current == target
+
+# -----------------------------
+# BUILD GRAPH
+# -----------------------------
+
+def build_graph(user_checkins):
+
+    print("Computing home locations...")
+    home = compute_home_locations(user_checkins)
+
+    print("Building graph...")
+    G = nx.Graph()
+
+    for user in home:
+        G.add_node(user)
+
+    print("Adding local edges...")
+    add_local_edges(G, home, LOCAL_K)
+
+    print("Adding shortcuts...")
+    home_lookup = build_home_lookup(home)
+    shortcuts = add_shortcuts(G, user_checkins, home_lookup)
+
+    return G, home, shortcuts
+
+# -----------------------------
+# RUN TRIALS
+# -----------------------------
+
+def run_trials(G, coords, trials):
+
+    users = list(G.nodes())
+
+    successes = 0
+    lengths = []
+
+    for _ in range(trials):
+
+        start = random.choice(users)
+        target = random.choice(users)
+
+        if start == target:
+            continue
+
+        path, success = greedy_route(G, start, target, coords)
+
+        if success:
+            successes += 1
+            lengths.append(len(path) - 1)
+
+    print("\n===== RESULTS =====")
+    print("Trials:", trials)
+    print("Successes:", successes)
+
+    if trials > 0:
+        print("Success rate:", successes / trials)
+
+    if lengths:
+        avg_len = sum(lengths) / len(lengths)
+        print("Average path length:", avg_len)
+
+# -----------------------------
+# MAIN
 # -----------------------------
 
 def main():
-    print("Load your Gowalla graph + coordinates before running")
+
+    print("\n===== GOWALLA GREEDY ROUTING EXPERIMENT =====\n")
+
+    print("Loading checkins...")
+    user_checkins = load_checkins(CHECKIN_FILE)
+
+    print("Users loaded:", len(user_checkins))
+
+    G, home, shortcuts = build_graph(user_checkins)
+
+    print("Nodes:", G.number_of_nodes())
+    print("Edges:", G.number_of_edges())
+    print("Shortcuts:", len(shortcuts))
+
+    run_trials(G, home, TRIALS)
 
 
 if __name__ == "__main__":
