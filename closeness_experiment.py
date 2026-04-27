@@ -2,6 +2,7 @@ import networkx as nx
 import gzip
 import random
 import math
+import csv
 from collections import Counter
 
 # before running dont forget about Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
@@ -260,12 +261,13 @@ def run_trials(G, coords, trials):
 # PREDICTION EXPERIMENT
 # -----------------------------
 
-def prediction_experiment(G, home, trials=1000, delta=0.2):
+def prediction_experiment(G, home, trials=1000, delta=0.3):
 
     users = list(G.nodes())
 
     success = 0
     total = 0
+    total_ratio = 0
 
     for _ in range(trials):
 
@@ -280,15 +282,19 @@ def prediction_experiment(G, home, trials=1000, delta=0.2):
         if not ok:
             continue
 
-        final_node = path[-1]
+        if len(path) < 2:
+            continue
 
-        predicted = haversine(home[final_node], home[target])
+        predicted_node = path[1]  # first greedy choice
+        predicted = haversine(home[predicted_node], home[target])
         actual = haversine(home[start], home[target])
 
         if actual == 0:
             continue
 
         ratio = predicted / actual
+
+        total_ratio += ratio
 
         if (1 - delta) <= ratio <= (1 + delta):
             success += 1
@@ -297,7 +303,8 @@ def prediction_experiment(G, home, trials=1000, delta=0.2):
 
     print("\n=== PREDICTION RESULTS ===")
     print("Trials:", total)
-    print("Accuracy:", success / total if total else 0)
+    print("Average Ratio:", total_ratio / total)
+    print("Accuracy:", success / total)
 
 # -----------------------------
 # MAIN
@@ -322,7 +329,7 @@ def main():
 
     prediction_experiment(G, home, PRED_TRIALS)
 
-#    for d in [0.1, 0.2, 0.5]:
+#    for d in [0.1, 0.2, 0.5, 0.9]:
 #        prediction_experiment(G, home, 1000, d)
 # Try after verifying it's right
 
