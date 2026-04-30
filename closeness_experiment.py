@@ -4,6 +4,9 @@ import random
 import math
 from collections import Counter
 
+# before running dont forget about Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+# and then .\venv\Scripts\Activate.ps1
+
 # -----------------------------
 # SETTINGS
 # -----------------------------
@@ -12,7 +15,7 @@ EDGE_FILE = "data/loc-gowalla_edges.txt.gz"
 CHECKIN_FILE = "data/loc-gowalla_totalCheckins.txt.gz"
 
 SAMPLE_SIZE = 50000
-TRIALS = 2000
+TRIALS = 3000
 DELTA = 0.2   # tolerance for ratio
 
 # -----------------------------
@@ -78,32 +81,16 @@ def load_checkins(file, allowed):
     return data
 
 # -----------------------------
-# HOME + LAST LOCATION
+# HOME (FIRST + LAST)
 # -----------------------------
 
-def compute_home_and_last(user_checkins):
-
+def compute_home_locations(user_checkins):
     home = {}
-    last = {}
+    last= {}
 
     for user, locs in user_checkins.items():
-
-        # last check-in
-        last[user] = locs[-1]
-
-        # home = most frequent
-        counts = Counter(locs)
-        max_count = max(counts.values())
-
-        candidates = [l for l, c in counts.items() if c == max_count]
-
-        if len(candidates) == 1:
-            home[user] = candidates[0]
-        else:
-            for loc in reversed(locs):
-                if loc in candidates:
-                    home[user] = loc
-                    break
+        home[user] = locs[0]   # first check-in
+        last[user] = locs[-1]  # last check-in
 
     return home, last
 
@@ -111,7 +98,9 @@ def compute_home_and_last(user_checkins):
 # GREEDY (GRAPH DISTANCE)
 # -----------------------------
 
-def greedy_route(G, start, target, coords, max_steps=1000):
+def greedy_route(G, start, target, home, user_checkins, max_steps=1000):
+
+    target_loc = user_checkins[target][-1]
 
     current = start
     path = [current]
@@ -131,11 +120,10 @@ def greedy_route(G, start, target, coords, max_steps=1000):
 
         for n in neighbors:
 
-            # ONLY local information
-            if n not in coords or target not in coords:
+            if n not in home:
                 continue
 
-            d = haversine(coords[n], coords[target])
+            d = haversine(home[n], target_loc)
 
             if d < best_dist:
                 best_dist = d
@@ -151,16 +139,14 @@ def greedy_route(G, start, target, coords, max_steps=1000):
         steps += 1
 
     return path, current == target
+
 # -----------------------------
 # FINAL EXPERIMENT
 # -----------------------------
 
-def prediction_ratio_experiment(G, home, last, trials, delta):
+def prediction_ratio_experiment(G, home, last, user_checkins, trials, delta):
 
     users = [u for u in G.nodes() if u in home and u in last]
-
-    success = 0
-    total = 0
 
     success = 0
     total = 0
@@ -173,13 +159,13 @@ def prediction_ratio_experiment(G, home, last, trials, delta):
         if start == target:
             continue
 
-        path, ok = greedy_route(G, start, target, home)
+        path, ok = greedy_route(G, start, target, home, user_checkins)
 
-        # only requirement: at least one move
+        # must have at least two nodes to get second-to-last
         if len(path) < 2:
             continue
 
-        u = path[-2]
+        u = path[-2] # second-to-last node
 
         predicted = haversine(home[u], last[target])
         actual = haversine(home[start], last[target])
@@ -215,7 +201,7 @@ def main():
     print("Loading checkins...")
     user_checkins = load_checkins(CHECKIN_FILE, set(G.nodes()))
 
-    home, last = compute_home_and_last(user_checkins)
+    home, last = compute_home_locations(user_checkins)
 
     # filter graph
     valid = set(home.keys()) & set(last.keys())
@@ -224,7 +210,7 @@ def main():
     print("Nodes:", G.number_of_nodes())
     print("Edges:", G.number_of_edges())
 
-    prediction_ratio_experiment(G, home, last, TRIALS, DELTA)
+    prediction_ratio_experiment(G, home, last, user_checkins, TRIALS, DELTA)
 
 
 if __name__ == "__main__":
