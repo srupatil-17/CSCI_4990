@@ -14,12 +14,12 @@ from collections import Counter
 EDGE_FILE = "data/loc-gowalla_edges.txt.gz"
 CHECKIN_FILE = "data/loc-gowalla_totalCheckins.txt.gz"
 
-SAMPLE_SIZE = 50000
-TRIALS = 3000
-DELTA = 0.2   # tolerance for ratio
+SAMPLE_SIZE = 50000 # can be changed, be cautious of run-time increasing
+TRIALS = 3000 # same as above
+DELTA = 0.2   # tolerance for ratio, can be changed to experiment with the interval
 
 # -----------------------------
-# HAVERSINE
+# HAVERSINE DISTANCE
 # -----------------------------
 
 def haversine(a, b):
@@ -180,7 +180,7 @@ def prediction_ratio_experiment(G, home, last, user_checkins, trials, delta):
 
         total += 1
 
-    print("\n===== RATIO EXPERIMENT =====")
+    print("\n===== PREDICTION EXPERIMENT =====")
     print("Trials:", total)
     print("Within delta:", success)
 
@@ -193,7 +193,7 @@ def prediction_ratio_experiment(G, home, last, user_checkins, trials, delta):
 
 def main():
 
-    print("\n===== GOWALLA PREDICTION (RATIO + SECOND-LAST) =====\n")
+    print("\n===== GOWALLA PREDICTION  =====\n")
 
     print("Loading graph...")
     G = load_social_graph(EDGE_FILE, SAMPLE_SIZE)
