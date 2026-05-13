@@ -1,11 +1,10 @@
 import networkx as nx
 import gzip
 import math
-import os
 import csv
+import os
 from collections import Counter
 import matplotlib.pyplot as plt
-
 
 # before running dont forget about Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 # and then .\venv\Scripts\Activate.ps1
@@ -17,9 +16,9 @@ import matplotlib.pyplot as plt
 EDGE_FILE = "data/loc-gowalla_edges.txt.gz"
 CHECKIN_FILE = "data/loc-gowalla_totalCheckins.txt.gz"
 
-RESULT_FOLDER = "new_scenario_results"
+MAX_STEPS = 1000
 
-MAX_STEPS = 1000 # to make sure greedy doesn't run forever
+RESULT_FOLDER = "scenario_results"
 
 # -----------------------------
 # HAVERSINE DISTANCE
@@ -38,15 +37,11 @@ def haversine(a, b):
     dphi = math.radians(lat2 - lat1)
     dlambda = math.radians(lon2 - lon1)
 
-    x = (
-        math.sin(dphi / 2) ** 2
-        + math.cos(phi1)
-        * math.cos(phi2)
-        * math.sin(dlambda / 2) ** 2
-    )
+    x = math.sin(dphi / 2) ** 2 + \
+        math.cos(phi1) * math.cos(phi2) * \
+        math.sin(dlambda / 2) ** 2
 
     return 2 * R * math.atan2(math.sqrt(x), math.sqrt(1 - x))
-
 
 # -----------------------------
 # LOAD SOCIAL GRAPH
@@ -56,7 +51,7 @@ def load_social_graph(file):
 
     G = nx.Graph()
 
-    with gzip.open(file, "rt") as f:
+    with gzip.open(file, 'rt') as f:
 
         for line in f:
 
@@ -64,18 +59,20 @@ def load_social_graph(file):
 
             G.add_edge(u, v)
 
-    return G
+    print("Nodes:", G.number_of_nodes())
+    print("Edges:", G.number_of_edges())
 
+    return G
 
 # -----------------------------
 # LOAD CHECKINS
 # -----------------------------
 
-def load_checkins(file):
+def load_checkins(file, allowed):
 
-    user_checkins = {}
+    data = {}
 
-    with gzip.open(file, "rt") as f:
+    with gzip.open(file, 'rt') as f:
 
         for line in f:
 
@@ -83,19 +80,21 @@ def load_checkins(file):
 
             user = parts[0]
 
+            if user not in allowed:
+                continue
+
             lat = float(parts[2])
             lon = float(parts[3])
 
-            user_checkins.setdefault(user, []).append((lat, lon))
+            data.setdefault(user, []).append((lat, lon))
 
-    return user_checkins
-
+    return data
 
 # -----------------------------
 # HOME + CURRENT LOCATIONS
 # -----------------------------
 
-def compute_locations(user_checkins):
+def compute_home_and_current(user_checkins):
 
     home = {}
     current = {}
@@ -105,57 +104,13 @@ def compute_locations(user_checkins):
         if len(locs) == 0:
             continue
 
+        # first checkin
         home[user] = locs[0]
+
+        # last checkin
         current[user] = locs[-1]
 
     return home, current
-
-
-# -----------------------------
-# FILTER GRAPH
-# -----------------------------
-
-def filter_graph(G, home, current):
-
-    valid = set(home.keys()) & set(current.keys())
-
-    return G.subgraph(valid).copy()
-
-
-# -----------------------------
-# SHORTEST PATH
-# -----------------------------
-
-def shortest_path_experiment(G):
-
-    lengths = []
-    rows = []
-
-    nodes = list(G.nodes())
-
-    for source in nodes:
-
-        distances = nx.single_source_shortest_path_length(G, source)
-
-        for target in nodes:
-
-            if source == target:
-                continue
-
-            if target in distances:
-
-                hops = distances[target]
-
-                lengths.append(hops)
-
-                rows.append([
-                    source,
-                    target,
-                    hops
-                ])
-
-    return lengths, rows
-
 
 # -----------------------------
 # GREEDY ROUTING
@@ -163,38 +118,40 @@ def shortest_path_experiment(G):
 
 def greedy_route(
     G,
-    source,
+    start,
     target,
-    neighbor_location_func,
-    target_location_func
+    neighbor_locations,
+    target_locations,
+    max_steps=MAX_STEPS
 ):
 
-    current = source
+    current = start
+
+    visited = set([current])
 
     path = [current]
-    visited = set([current])
 
     steps = 0
 
-    while current != target and steps < MAX_STEPS:
+    while current != target and steps < max_steps:
 
         neighbors = list(G.neighbors(current))
 
-        if not neighbors: 
+        if not neighbors:
             return path, False, "dead_end"
-        # when the route reaches a node that is farther away from the target than the node before it
-        # largely due to loops? will be recorded
 
         best = None
         best_dist = float("inf")
 
-        target_loc = target_location_func(target)
-
         for n in neighbors:
 
-            neighbor_loc = neighbor_location_func(n)
+            if n not in neighbor_locations:
+                continue
 
-            d = haversine(neighbor_loc, target_loc)
+            d = haversine(
+                neighbor_locations[n],
+                target_locations[target]
+            )
 
             if d < best_dist:
 
@@ -204,14 +161,17 @@ def greedy_route(
         if best is None:
             return path, False, "no_choice"
 
-        # cycle detection
+        # loop detection
         if best in visited:
+
             path.append(best)
-            return path, False, "cycle"
+
+            return path, False, "loop"
 
         current = best
 
         path.append(current)
+
         visited.add(current)
 
         steps += 1
@@ -221,118 +181,241 @@ def greedy_route(
 
     return path, False, "max_steps"
 
+# -----------------------------
+# SCENARIO 1
+# SHORTEST PATH
+# -----------------------------
+
+def shortest_path_experiment(G):
+
+    distribution = Counter()
+
+    results_file = os.path.join(
+        RESULT_FOLDER,
+        "scenario1_shortest_paths.csv"
+    )
+
+    disconnected_file = os.path.join(
+        RESULT_FOLDER,
+        "scenario1_disconnected.csv"
+    )
+
+    nodes = list(G.nodes())
+
+    with open(results_file, "w", newline="") as rf, \
+         open(disconnected_file, "w", newline="") as df:
+
+        writer = csv.writer(rf)
+        disconnected_writer = csv.writer(df)
+
+        writer.writerow([
+            "source",
+            "target",
+            "hops"
+        ])
+
+        disconnected_writer.writerow([
+            "source",
+            "target"
+        ])
+
+        total = len(nodes)
+
+        for i, source in enumerate(nodes):
+
+            print(f"Scenario 1 source {i+1}/{total}")
+
+            distances = nx.single_source_shortest_path_length(
+                G,
+                source
+            )
+
+            for target in nodes:
+
+                if source == target:
+                    continue
+
+                if target in distances:
+
+                    hops = distances[target]
+
+                    writer.writerow([
+                        source,
+                        target,
+                        hops
+                    ])
+
+                    distribution[hops] += 1
+
+                else:
+
+                    disconnected_writer.writerow([
+                        source,
+                        target
+                    ])
+
+    return distribution
 
 # -----------------------------
 # GENERIC GREEDY EXPERIMENT
 # -----------------------------
 
-def run_greedy_experiment(
+def greedy_experiment(
     G,
+    neighbor_locations,
+    target_locations,
     scenario_name,
-    neighbor_location_func,
-    target_location_func
+    prefix
 ):
 
-    lengths = []
+    distribution = Counter()
 
-    success_rows = []
-    loop_rows = []
+    results_file = os.path.join(
+        RESULT_FOLDER,
+        f"{prefix}_results.csv"
+    )
+
+    failure_file = os.path.join(
+        RESULT_FOLDER,
+        f"{prefix}_failures.csv"
+    )
 
     nodes = list(G.nodes())
 
-    total_pairs = 0
+    with open(results_file, "w", newline="") as rf, \
+         open(failure_file, "w", newline="") as ff:
 
-    for source in nodes:
+        writer = csv.writer(rf)
+        failure_writer = csv.writer(ff)
 
-        for target in nodes:
+        writer.writerow([
+            "source",
+            "target",
+            "hops"
+        ])
 
-            if source == target:
-                continue
+        failure_writer.writerow([
+            "source",
+            "target",
+            "failure_type",
+            "path"
+        ])
 
-            total_pairs += 1
+        total = len(nodes)
 
-            path, success, reason = greedy_route(
-                G,
-                source,
-                target,
-                neighbor_location_func,
-                target_location_func
-            )
+        for i, source in enumerate(nodes):
 
-            if success:
+            print(f"{scenario_name} source {i+1}/{total}")
 
-                hops = len(path) - 1
+            for target in nodes:
 
-                lengths.append(hops)
+                if source == target:
+                    continue
 
-                success_rows.append([
+                path, ok, reason = greedy_route(
+                    G,
                     source,
                     target,
-                    hops
-                ])
+                    neighbor_locations,
+                    target_locations
+                )
 
-            else:
+                if ok:
 
-                loop_rows.append([
-                    source,
-                    target,
-                    reason,
-                    len(path) - 1,
-                    path
-                ])
+                    hops = len(path) - 1
 
-    print(f"\n{scenario_name}")
-    print("Total pairs:", total_pairs)
-    print("Successful routes:", len(success_rows))
-    print("Failures:", len(loop_rows))
+                    writer.writerow([
+                        source,
+                        target,
+                        hops
+                    ])
 
-    return lengths, success_rows, loop_rows
+                    distribution[hops] += 1
 
+                else:
+
+                    failure_writer.writerow([
+                        source,
+                        target,
+                        reason,
+                        path
+                    ])
+
+    return distribution
 
 # -----------------------------
-# DISTRIBUTION
+# NORMALIZE DISTRIBUTION
 # -----------------------------
 
-def compute_distribution(lengths):
+def normalize_distribution(distribution):
 
-    count = Counter(lengths)
+    total = sum(distribution.values())
 
-    total = sum(count.values())
+    if total == 0:
+        return {}
 
     return {
-        k: count[k] / total
-        for k in count
+        k: v / total
+        for k, v in distribution.items()
     }
 
+# -----------------------------
+# EXPECTED VALUE
+# -----------------------------
+
+def expected_value(distribution):
+
+    total = sum(distribution.values())
+
+    if total == 0:
+        return 0
+
+    s = 0
+
+    for hops, count in distribution.items():
+
+        s += hops * count
+
+    return s / total
 
 # -----------------------------
-# SAVE CSV
+# EXPORT DISTRIBUTIONS
 # -----------------------------
 
-def save_csv(rows, filename, header):
+def export_distribution_csvs(distributions):
 
-    os.makedirs(RESULT_FOLDER, exist_ok=True)
+    for label, dist in distributions.items():
 
-    filepath = os.path.join(RESULT_FOLDER, filename)
+        safe = label.replace(" ", "_")
 
-    with open(filepath, "w", newline="") as f:
+        file = os.path.join(
+            RESULT_FOLDER,
+            f"{safe}_distribution.csv"
+        )
 
-        writer = csv.writer(f)
+        with open(file, "w", newline="") as f:
 
-        writer.writerow(header)
+            writer = csv.writer(f)
 
-        writer.writerows(rows)
+            writer.writerow([
+                "hops",
+                "probability"
+            ])
 
-    print("Saved:", filepath)
+            for hops in sorted(dist.keys()):
 
+                writer.writerow([
+                    hops,
+                    dist[hops]
+                ])
+
+        print("Saved:", file)
 
 # -----------------------------
 # PLOT DISTRIBUTIONS
 # -----------------------------
 
 def plot_distributions(distributions):
-
-    os.makedirs(RESULT_FOLDER, exist_ok=True)
 
     plt.figure(figsize=(10, 6))
 
@@ -342,28 +425,36 @@ def plot_distributions(distributions):
             continue
 
         x = sorted(dist.keys())
+
         y = [dist[k] for k in x]
 
-        plt.plot(x, y, marker="o", label=label)
+        plt.plot(
+            x,
+            y,
+            marker='o',
+            label=label
+        )
 
     plt.xlabel("Number of Hops")
+
     plt.ylabel("Probability")
 
-    plt.title("Routing Distributions")
+    plt.title("Routing Probability Distributions")
 
     plt.legend()
+
     plt.grid()
 
-    filepath = os.path.join(
+    file = os.path.join(
         RESULT_FOLDER,
         "scenario_distributions.png"
     )
 
-    plt.savefig(filepath)
+    plt.savefig(file)
+
     plt.close()
 
-    print("Saved:", filepath)
-
+    print("Saved plot:", file)
 
 # -----------------------------
 # MAIN
@@ -371,157 +462,169 @@ def plot_distributions(distributions):
 
 def main():
 
-    print("\n===== LOADING DATA =====")
+    os.makedirs(RESULT_FOLDER, exist_ok=True)
+
+    print("\n===== LOADING GRAPH =====")
 
     G = load_social_graph(EDGE_FILE)
 
-    user_checkins = load_checkins(CHECKIN_FILE)
+    print("\n===== LOADING CHECKINS =====")
 
-    home, current = compute_locations(user_checkins)
-
-    G = filter_graph(G, home, current)
-
-    print("Nodes:", G.number_of_nodes())
-    print("Edges:", G.number_of_edges())
-
-    distributions = {}
-
-    # -----------------------------
-    # SCENARIO 1
-    # -----------------------------
-
-    print("Running scenario 1....")
-
-    s1_lengths, s1_rows = shortest_path_experiment(G)
-
-    save_csv(
-        s1_rows,
-        "scenario1_shortest_paths.csv",
-        ["source", "target", "hops"]
+    user_checkins = load_checkins(
+        CHECKIN_FILE,
+        set(G.nodes())
     )
 
-    distributions["Shortest Path"] = compute_distribution(s1_lengths)
+    home, current = compute_home_and_current(
+        user_checkins
+    )
 
-    # -----------------------------
-    # SCENARIO 2
-    # CURRENT -> CURRENT
-    # -----------------------------
+    valid = set(home.keys()) & set(current.keys())
 
-    print("Running scenario 2....")
+    G = G.subgraph(valid).copy()
 
-    s2_lengths, s2_success, s2_loops = run_greedy_experiment(
+    print("\nFiltered nodes:", G.number_of_nodes())
+    print("Filtered edges:", G.number_of_edges())
+
+    # ---------------------------------
+    # Scenario 1
+    # shortest path
+    # ---------------------------------
+
+    print("Computing Scenario 1...")
+
+    print("\n===== SCENARIO 1 =====")
+
+    s1 = shortest_path_experiment(G)
+
+    # ---------------------------------
+    # Scenario 2
+    # current -> current
+    # ---------------------------------
+
+    print("Computing Scenario 2...")
+
+    print("\n===== SCENARIO 2 =====")
+
+    s2 = greedy_experiment(
         G,
-        "Scenario 2: Current to Current",
-        lambda u: current[u],
-        lambda t: current[t]
+        current,
+        current,
+        "Scenario 2",
+        "scenario2_current_current"
     )
 
+    # ---------------------------------
+    # Scenario 3
+    # home -> home
+    # ---------------------------------
 
-    save_csv(
-        s2_success,
-        "scenario2_success.csv",
-        ["source", "target", "hops"]
-    )
+    print("Computing Scenario 3...")
 
-    save_csv(
-        s2_loops,
-        "scenario2_loops.csv",
-        ["source", "target", "reason", "steps", "path"]
-    )
+    print("\n===== SCENARIO 3 =====")
 
-    distributions["Current->Current"] = compute_distribution(s2_lengths)
-
-    # -----------------------------
-    # SCENARIO 3
-    # HOME -> HOME
-    # -----------------------------
-
-    print("Running scenario 3....")
-
-    s3_lengths, s3_success, s3_loops = run_greedy_experiment(
+    s3 = greedy_experiment(
         G,
-        "Scenario 3: Home to Home",
-        lambda u: home[u],
-        lambda t: home[t]
+        home,
+        home,
+        "Scenario 3",
+        "scenario3_home_home"
     )
 
-    save_csv(
-        s3_success,
-        "scenario3_success.csv",
-        ["source", "target", "hops"]
-    )
+    # ---------------------------------
+    # Scenario 4
+    # home -> current
+    # ---------------------------------
 
-    save_csv(
-        s3_loops,
-        "scenario3_loops.csv",
-        ["source", "target", "reason", "steps", "path"]
-    )
+    print("Computing Scenario 4...")
 
-    distributions["Home->Home"] = compute_distribution(s3_lengths)
+    print("\n===== SCENARIO 4 =====")
 
-    # -----------------------------
-    # SCENARIO 4
-    # HOME -> CURRENT
-    # -----------------------------
-
-    print("Running scenario 4....")
-
-    s4_lengths, s4_success, s4_loops = run_greedy_experiment(
+    s4 = greedy_experiment(
         G,
-        "Scenario 4: Home to Current",
-        lambda u: home[u],
-        lambda t: current[t]
+        home,
+        current,
+        "Scenario 4",
+        "scenario4_home_current"
     )
 
-    save_csv(
-        s4_success,
-        "scenario4_success.csv",
-        ["source", "target", "hops"]
-    )
+    # ---------------------------------
+    # Scenario 5
+    # current -> home
+    # ---------------------------------
 
-    save_csv(
-        s4_loops,
-        "scenario4_loops.csv",
-        ["source", "target", "reason", "steps", "path"]
-    )
+    print("Computing Scenario 5...")
 
-    distributions["Home->Current"] = compute_distribution(s4_lengths)
+    print("\n===== SCENARIO 5 =====")
 
-    # -----------------------------
-    # SCENARIO 5
-    # CURRENT -> HOME
-    # -----------------------------
-
-    print("Running scenario 5....")
-
-    s5_lengths, s5_success, s5_loops = run_greedy_experiment(
+    s5 = greedy_experiment(
         G,
-        "Scenario 5: Current to Home",
-        lambda u: current[u],
-        lambda t: home[t]
+        current,
+        home,
+        "Scenario 5",
+        "scenario5_current_home"
     )
 
-    save_csv(
-        s5_success,
-        "scenario5_success.csv",
-        ["source", "target", "hops"]
-    )
+    # ---------------------------------
+    # NORMALIZE
+    # ---------------------------------
 
-    save_csv(
-        s5_loops,
-        "scenario5_loops.csv",
-        ["source", "target", "reason", "steps", "path"]
-    )
+    distributions = {
 
-    distributions["Current->Home"] = compute_distribution(s5_lengths)
+        "Shortest Path":
+            normalize_distribution(s1),
 
-    # -----------------------------
+        "Current→Current":
+            normalize_distribution(s2),
+
+        "Home→Home":
+            normalize_distribution(s3),
+
+        "Home→Current":
+            normalize_distribution(s4),
+
+        "Current→Home":
+            normalize_distribution(s5)
+    }
+
+    # ---------------------------------
+    # EXPECTED VALUES
+    # ---------------------------------
+
+    print("\n===== EXPECTED VALUES =====")
+
+    scenarios = [
+        ("Scenario 1", s1),
+        ("Scenario 2", s2),
+        ("Scenario 3", s3),
+        ("Scenario 4", s4),
+        ("Scenario 5", s5)
+    ]
+
+    for name, dist in scenarios:
+
+        total = sum(dist.values())
+
+        exp = expected_value(dist)
+
+        print(name)
+        print("Samples:", total)
+        print("Expected hops:", round(exp, 3))
+        print()
+
+    # ---------------------------------
+    # EXPORT DISTRIBUTIONS
+    # ---------------------------------
+
+    export_distribution_csvs(distributions)
+
+    # ---------------------------------
     # PLOT
-    # -----------------------------
+    # ---------------------------------
 
     plot_distributions(distributions)
 
-    print("\n===== COMPLETE =====")
+    print("\n===== DONE =====")
 
 
 if __name__ == "__main__":
